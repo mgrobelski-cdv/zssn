@@ -1,47 +1,92 @@
-# rag_utils.py
 import os
-from PyPDF2 import PdfReader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain_community.vectorstores import FAISS
+from pypdf import PdfReader
+import re
 
-# Inicjalizacja modelu embeddingów (darmowy, działa lokalnie)
-# Model 'all-MiniLM-L6-v2' jest mały, szybki i wystarczający do prostych zadań
-embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
-
-def load_pdf(file):
-    """Wczytuje tekst z jednego pliku PDF (obsługuje pliki przeładowane przez streamlit)"""
-    reader = PdfReader(file)
+def load_pdf(file_path: str) -> str:
+    """
+    Wczytuje i zwraca tekst z pojedynczego pliku PDF.
+    """
     text = ""
-    for page in reader.pages:
-        text += page.extract_text() + "\n"
+    try:
+        reader = PdfReader(file_path)
+        for page in reader.pages:
+            extracted_text = page.extract_text()
+            if extracted_text:
+                text += extracted_text + "\n"
+    except Exception as e:
+        print(f"Błąd podczas czytania pliku {file_path}: {e}")
     return text
 
-def load_documents_from_folder(folder_path):
-    """Wczytuje wszystkie pliki PDF z podanego folderu"""
-    all_text = ""
-    for filename in os.listdir(folder_path):
-        if filename.endswith(".pdf"):
-            path = os.path.join(folder_path, filename)
-            with open(path, "rb") as f:
-                reader = PdfReader(f)
-                for page in reader.pages:
-                    all_text += page.extract_text() + "\n"
-    return all_text
-
-def create_vector_store(text):
-    """Dzieli tekst na kawałki i tworzy bazę wektorową FAISS"""
-    # 1. Dzielenie tekstu (Chunking)
-    # chunk_size: długość kawałka tekstu, chunk_overlap: część wspólna między kawałkami
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
-    chunks = text_splitter.split_text(text)
+def load_documents_from_folder(folder_path: str, chunk_size: int = 1500, overlap: int = 200) -> list[dict]:
+    """
+    Przeszukuje folder, wczytuje wszystkie PDFy i dzieli ich zawartość na fragmenty (chunks).
+    Zwraca listę słowników z metadanymi i treścią.
+    """
+    documents = []
     
-    # 2. Tworzenie bazy wektorowej z embeddingami
-    vector_store = FAISS.from_texts(chunks, embeddings)
-    return vector_store
+    # Sprawdzamy, czy folder istnieje, jeśli nie - tworzymy go
+    if not os.path.exists(folder_path):
+        os.makedirs(folder_path)
+        print(f"Utworzono folder '{folder_path}'. Wrzuć do niego swoje pliki PDF.")
+        return documents
 
-def get_relevant_context(query, vector_store):
-    """Szuka w bazie wektorowej fragmentów najbardziej pasujących do pytania"""
-    docs = vector_store.similarity_search(query, k=3) # Pobierz 3 najbardziej pasujące fragmenty
-    context = "\n\n".join([doc.page_content for doc in docs])
+    for filename in os.listdir(folder_path):
+        if filename.lower().endswith('.pdf'):
+            file_path = os.path.join(folder_path, filename)
+            full_text = load_pdf(file_path)
+            
+            # Prosty chunking (dzielenie na nachodzące na siebie fragmenty)
+            # Pomaga to zachować kontekst między cięciami
+            start = 0
+            chunk_id = 0
+            while start < len(full_text):
+                end = start + chunk_size
+                chunk = full_text[start:end]
+                
+                documents.append({
+                    "filename": filename,
+                    "chunk_id": chunk_id,
+                    "content": chunk
+                })
+                
+                start += (chunk_size - overlap)
+                chunk_id += 1
+                
+    return documents
+
+def get_relevant_context(query: str, documents: list[dict], top_k: int = 3) -> str:
+    """
+    Wyszukuje najbardziej pasujące fragmenty tekstu do zapytania.
+    (Prosty RAG bez użycia zewnętrznych modeli embeddings - oparty na słowach kluczowych).
+    """
+    if not documents:
+        return ""
+
+    # Czyszczenie i podział zapytania na słowa (bazowe słowa kluczowe)
+    query_words = set(re.findall(r'\w+', query.lower()))
+    if not query_words:
+        return ""
+
+    scored_docs = []
+    for doc in documents:
+        # Podział tekstu dokumentu na słowa
+        doc_words = set(re.findall(r'\w+', doc["content"].lower()))
+        # Liczymy ile słów kluczowych z zapytania występuje w danym fragmencie (przecięcie zbiorów)
+        score = len(query_words.intersection(doc_words))
+        scored_docs.append((score, doc))
+        
+    # Sortujemy malejąco po wyniku
+    scored_docs.sort(key=lambda x: x[0], reverse=True)
+    
+    # Wybieramy najlepsze fragmenty (o ile mają wynik > 0)
+    top_docs = [doc for score, doc in scored_docs[:top_k] if score > 0]
+    
+    # Złączamy znalezione fragmenty w jeden tekst, który trafi do modelu
+    if not top_docs:
+        return ""
+        
+    context = "Znalazłem następujące informacje w dokumentach bazy wiedzy:\n\n"
+    for doc in top_docs:
+        context += f"--- Fragment z pliku: {doc['filename']} ---\n{doc['content']}\n\n"
+        
     return context

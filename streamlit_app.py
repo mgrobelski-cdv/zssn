@@ -26,11 +26,36 @@ def init_knowledge_base():
 
 # Wczytanie bazy wiedzy z folderu 'data'
 documents = init_knowledge_base()
-if not documents:
-    st.warning("Baza wiedzy jest pusta. Dodaj pliki PDF do folderu 'data'.")
-else:
-    st.success(f"Wczytano {len(documents)} fragmentów tekstu z bazy wiedzy.")
-# --------------------------
+
+# --- UPLOAD PLIKÓW I STATUS BAZY (Panel boczny) ---
+with st.sidebar:
+    st.header("Zarządzanie bazą wiedzy")
+    
+    # Widżet do wgrywania plików
+    uploaded_file = st.file_uploader("Wgraj plik PDF", type=["pdf"])
+    if uploaded_file is not None:
+        # Upewniamy się, że folder data istnieje
+        if not os.path.exists("data"):
+            os.makedirs("data")
+            
+        # Zapisujemy wgrany plik na dysku
+        file_path = os.path.join("data", uploaded_file.name)
+        with open(file_path, "wb") as f:
+            f.write(uploaded_file.getbuffer())
+            
+        st.success(f"Dodano plik: {uploaded_file.name}")
+        
+        # Czyścimy cache bazy wiedzy i wymuszamy odświeżenie aplikacji
+        init_knowledge_base.clear() 
+        st.rerun()
+
+    # Wyświetlanie statusu bazy
+    st.divider()
+    if not documents:
+        st.warning("Baza wiedzy jest pusta. Dodaj pliki PDF powyżej.")
+    else:
+        st.success(f"Baza aktywna: {len(documents)} fragmentów wiedzy.")
+# --------------------------------------------------
 
 if "messages" not in st.session_state:
     st.session_state["messages"] = [{"role": "assistant", "content": "How can I help you?."}]
